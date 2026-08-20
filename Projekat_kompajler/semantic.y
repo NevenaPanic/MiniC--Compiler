@@ -6,6 +6,7 @@
   #include "codegen.h"
   
   #define MAX_SIZE 50
+  #define MAX_CASES 10
 
   int yyparse(void);
   int yylex(void);
@@ -55,6 +56,13 @@
   int branch_num = 0;
   int pow_num = 0;
   
+  int switch_num = 0;
+  int case_num = 0;
+  int switch_exp_id = -1;
+  int cases[MAX_CASES];
+  bool default_case = FALSE;
+  
+  
 %}
 
 
@@ -94,6 +102,12 @@
 %token _THIRD
 %token _OTHERWISE
 %token _END_BRANCH
+
+%token _SWITCH
+%token _CASE
+%token _BREAK
+%token _DEFAULT
+
 %token _POW
 
 %type <i> num_exp exp literal function_call argument arguments rel_exp increment void_function_call if_part conditional_exp con_exp
@@ -308,6 +322,7 @@ statement
   | for_statement
   | branch_statement
   | void_function_call
+  | switch_statement
   ;
 
 compound_statement
@@ -356,8 +371,7 @@ for_statement
   	}
     rel_exp
     	{ code("\n\t\t%s\t@for_end%d", opp_jumps[$7], for_num);  } // uslov nije ispunjen, idi na kraj, uskov dobar, propadam dalje
-     _SEMICOLON _ID _INC
-      _RPAREN statement  
+     _SEMICOLON _ID _INC _RPAREN statement  
       {
       	
       	if(get_type($3) == INT)
@@ -425,9 +439,94 @@ branch_statement
   	}
   ;
 
+switch_statement
+	: _SWITCH _LPAREN _ID
+	{
+  		int id_index = lookup_symbol($3, VAR|PAR|GVAR);
+  		if(id_index == NO_INDEX)
+  			err("Variable '%s' have to be declared beforhand, to bu used in baranch statement! ", $3);
+  			
+		switch_exp_id = id_index;
+		
+		code("\n@switch_%d:\n", ++switch_num);
+		code("\n\t\tJMP @switch_check_%d\n", switch_num);
+    }
+	 _RPAREN _LBRACKET cases default _RBRACKET
+	 {
+	    code("\n\t\tJMP @switch_end_%d\n", switch_num);
+		code("\n@switch_check_%d:\n", switch_num);
+	    for(int i = 0; i < case_num; i++)
+	    {
+	        gen_cmp(switch_exp_id, cases[i]);
+	        code("\n\t\tJEQ @case_%d_%d", switch_num, i);
+        }
+        
+        if(default_case == TRUE)
+        {
+            code("\n\t\tJMP @default_%d", switch_num);
+        }
+        
+	    code("\n@switch_end_%d:\n", switch_num);
+	    
+		// clean up
+	    for(int i = 0; i < MAX_CASES; i++)
+	    {
+	        cases[i] = NO_INDEX;
+	    }
+	          
+        case_num = 0;
+	    default_case = FALSE;
+	 }
+	;
+	
+case
+  : _CASE con_exp
+    {
+    	if(get_type($2) != get_type(switch_exp_id))
+   		    err("Case value is not the same type as switch expression!");
+   		
+   		if(case_num == MAX_CASES)
+   		{
+	        err("Max number of cases is 10.");
+   		}
+        
+        for(int i = 0; i <= case_num; i++)
+            if(cases[i] == $2)
+                err("Case expressions must be unique!");
+        
+        cases[case_num] = $2;
+        code("\n@case_%d_%d:", switch_num, case_num);
+        ++case_num;
+	   
+    }
+   _TWO_DOTS statement break
+  ;
+
+cases
+  : case
+  | cases case
+  ;
+  
+break
+  : /* empty */
+  | _BREAK _SEMICOLON
+   {
+        code("\n\t\tJMP @switch_end_%d\n", switch_num);
+   }
+  ;
+  
+default
+  : /* empty */
+  | _DEFAULT
+    {
+        default_case = TRUE;
+        code("\n@default_%d:\n", switch_num);
+    }
+   _TWO_DOTS statement
+  ;
 
 conditional_exp
-	:	_LPAREN rel_exp _RPAREN _Q_MARK con_exp _TWO_DOTS con_exp
+	: _LPAREN rel_exp _RPAREN _Q_MARK con_exp _TWO_DOTS con_exp
 		{	
 			if(get_type($5) != get_type($7))
 				err("\nOperands are different types in conditional expression!");
@@ -439,14 +538,14 @@ conditional_exp
 			
 			int reg = take_reg();
 
-            gen_mov($5, reg);
-            code("\n\t\tJMP \t@con_exit%d", con_num);
+			gen_mov($5, reg);
+			code("\n\t\tJMP \t@con_exit%d", con_num);
 
-            code("\n@con_false%d:", con_num);
-            gen_mov($7 , reg);
+			code("\n@con_false%d:", con_num);
+			gen_mov($7 , reg);
 
-            $$ = reg;
-            code("\n@con_exit%d:", con_num);
+			$$ = reg;
+		    	code("\n@con_exit%d:", con_num);
 		}
 	;
 
