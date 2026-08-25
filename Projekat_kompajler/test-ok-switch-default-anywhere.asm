@@ -4,36 +4,29 @@ main:
 		MOV 	%15,%14
 		SUBS	%15,$8,%15
 @main_body:
-		MOV 	$9,-4(%14)
-		MOV 	$2,-8(%14)
+		MOV 	$2,-4(%14)
+		MOV 	$0,-8(%14)
 @switch_begin_1:
 		JMP	@switch_check_1
+@default_1:
+		MOV 	$99,-8(%14)
+		JMP	@switch_end_1
 @case_1_0:
-		MULS	-4(%14),$2,%0
-		MOV 	%0,-4(%14)
+		MOV 	$10,-8(%14)
+		ADDS	-8(%14),$5,%0
+		MOV 	%0,-8(%14)
 		JMP	@switch_end_1
 @case_1_1:
-		ADDS	-4(%14),$9,%0
-		MOV 	%0,-4(%14)
-		JMP	@switch_end_1
-@case_1_2:
-		MULS	-4(%14),$7,%0
-		ADDS	%0,$7,%0
-		MOV 	%0,-4(%14)
-		JMP	@switch_end_1
-@default_1:
-		MOV 	$24,-4(%14)
+		MOV 	$30,-8(%14)
 		JMP	@switch_end_1
 @switch_check_1:
 		CMPS	-4(%14),$2
 		JEQ	@case_1_0
-		CMPS	-4(%14),$9
+		CMPS	-4(%14),$3
 		JEQ	@case_1_1
-		CMPS	-4(%14),$7
-		JEQ	@case_1_2
 		JMP	@default_1
 @switch_end_1:
-		MOV 	-4(%14),%13
+		MOV 	-8(%14),%13
 		JMP 	@main_exit
 @main_exit:
 		MOV 	%14,%15

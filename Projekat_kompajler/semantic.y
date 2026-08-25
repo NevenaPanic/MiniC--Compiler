@@ -6,7 +6,7 @@
   #include "codegen.h"
   
   #define MAX_SIZE 50
-  #define MAX_CASES 10
+  //#define MAX_CASES 10
 
   int yyparse(void);
   int yylex(void);
@@ -56,12 +56,189 @@
   int branch_num = 0;
   int pow_num = 0;
   
+  /* Global state for the beginig
   int switch_num = 0;
   int case_num = 0;
   int switch_exp_id = -1;
   int cases[MAX_CASES];
-  bool default_case = FALSE;
+  bool default_case = FALSE;*/
   
+  // Case structure
+  typedef struct switch_case_data {
+    int literal_index;
+    unsigned type;
+    unsigned long long value;
+    int label_number;
+  } SWITCH_CASE_DATA;
+  
+  // Switch context stack structure
+  typedef struct switch_context{
+    int label_number;
+    int expression_index;
+    unsigned expression_type;
+    SWITCH_CASE_DATA *cases;
+    unsigned case_count;
+    unsigned case_capacity;
+    unsigned statement_count;
+    bool has_default;
+  } SWITCH_CONTEXT;
+  
+  // dynamic stack structure
+  SWITCH_CONTEXT *switch_stack = NULL;
+  unsigned switch_stack_size = 0;
+  unsigned switch_stack_capacity = 0;
+  int switch_count = 0;
+  
+  // Functions for switch stack
+  
+  // Get current switch context
+  SWITCH_CONTEXT* current_switch(void){
+    if(switch_stack == NULL || switch_stack_size == 0)
+        return NULL;
+    return &switch_stack[switch_stack_size - 1];  // first from the stack
+  }
+  
+  // Check before every switch
+  void begin_switch(int expression_index){
+    // First check if type is supported
+    unsigned int expression_type = get_type(expression_index);
+    if(expression_type != INT && expression_type != UINT)
+        err("Switch expression must be int or unsigned type;");
+    
+    // Second check is stack size
+    if(switch_stack_size == switch_stack_capacity){
+        unsigned new_capacity = switch_stack_capacity == 0 ? 4 : switch_stack_capacity * 2;     // initialize it to 4 for first switch or double the size of current stack
+        SWITCH_CONTEXT *new_stack = realloc(switch_stack, sizeof(SWITCH_CONTEXT) * new_capacity);
+        
+        if(new_stack == NULL){
+            err("\nCompiler error! Cannot allocate switch context stack!");
+            exit(EXIT_FAILURE);
+        }
+        
+        switch_stack = new_stack;
+        switch_stack_capacity = new_capacity;
+    }
+    
+    SWITCH_CONTEXT *context = &switch_stack[switch_stack_size++];
+    *context = (SWITCH_CONTEXT){++switch_count, expression_index, get_type(expression_index), NULL, 0, 0, 0, FALSE};
+    
+    code("\n@switch_begin_%d:", context->label_number);
+    code("\n\t\tJMP\t@switch_check_%d", context->label_number);
+  }
+  
+  unsigned long long switch_literal_value(int literal_index){
+    if(get_type(literal_index) == INT)
+        return (unsigned long long)strtoll(get_name(literal_index), NULL, 10);
+        
+    return (unsigned long long)strtoull(get_name(literal_index), NULL, 10);
+  }
+  
+  int add_switch_case(int literal_index){
+  
+    SWITCH_CONTEXT *context = current_switch();
+    if(context == NULL){
+        err("\nCompiler error! Case label outside switch context!");
+        return NO_INDEX;
+    }
+    
+    unsigned literal_type = get_type(literal_index);
+    unsigned long long literal_value = switch_literal_value(literal_index);
+    
+    // Type check
+    if(literal_type != context->expression_type){
+        err("\nCase value is not the same type as switch expression");
+        return NO_INDEX;    
+    }
+    
+    // Unique value check
+    for(int i = 0; i < context->case_count; i++){
+        if(context->cases[i].value == literal_value){
+            err("\nCase value must be unique!");
+            return NO_INDEX;
+        }
+    }
+    
+    // Memory check
+    if(context->case_count == context->case_capacity){
+        unsigned new_capacity = context->case_capacity == 0 ? 4 : context->case_capacity * 2;
+        SWITCH_CASE_DATA *new_cases = realloc(context->cases, sizeof(SWITCH_CASE_DATA) * new_capacity);
+        
+        if(new_cases == NULL){
+            err("\nCompiler error! Cannot allocate switch case list!");
+            exit(EXIT_FAILURE);
+        }
+        
+        context->cases = new_cases;
+        context->case_capacity = new_capacity;
+     }
+    
+    int label_number = (int)context->case_count;
+    context->cases[context->case_count] = (SWITCH_CASE_DATA){literal_index, literal_type, literal_value, label_number};
+    context->case_count++;
+    return label_number;
+  }
+  
+  bool add_switch_default(void){
+    SWITCH_CONTEXT *context = current_switch();
+        
+    if(context == NULL){
+        err("\nCompiler error! Default label outside switch context!");
+        return FALSE;
+    }
+    
+    if(context->has_default){
+        err("\nSwitch statement can contain only one default label!");
+        return FALSE;
+    }
+    
+    context->has_default = TRUE;
+    return TRUE;
+  }
+  
+  void count_switch_statement(void){
+    SWITCH_CONTEXT *context = current_switch();
+        if(context != NULL)
+            context->statement_count++;
+  }
+  
+  void end_switch(void){
+    SWITCH_CONTEXT *context = current_switch();
+    if(context == NULL){
+        err("\nCompiler error! Missing switch context.");
+        return;
+    }
+    
+    if(context->statement_count == 0)
+        err("\nSwitch must contain at least one statement!");
+        
+    code("\n\t\tJMP\t@switch_end_%d", context->label_number);
+    code("\n@switch_check_%d:", context->label_number);
+    for(int i = 0; i < context->case_count; i++){
+        code("\n\t\t%s\t", context->expression_type == INT ? "CMPS" : "CMPU");
+        gen_sym_name(context->expression_index);
+        code(",");
+        gen_sym_name(context->cases[i].literal_index);
+        code("\n\t\tJEQ\t@case_%d_%d", context->label_number, context->cases[i].label_number);
+    }
+    
+    if(context->has_default)
+        code("\n\t\tJMP\t@default_%d", context->label_number);
+        
+    code("\n@switch_end_%d:", context->label_number);
+    free_if_reg(context->expression_index);
+    free(context->cases);
+    context->cases = NULL;
+    switch_stack_size--;
+  }
+  
+  void clear_switch_context(void){
+    for(int i = 0; i < switch_stack_size; i++)
+        free(switch_stack[i].cases);
+    free(switch_stack);
+    switch_stack = NULL;
+    switch_stack_size = 0;
+    switch_stack_capacity = 0;
+  }
   
 %}
 
@@ -323,6 +500,7 @@ statement
   | branch_statement
   | void_function_call
   | switch_statement
+  | break_statement
   ;
 
 compound_statement
@@ -438,13 +616,13 @@ branch_statement
   	branch_num++;
   	}
   ;
-
+/*
 switch_statement
 	: _SWITCH _LPAREN _ID
 	{
   		int id_index = lookup_symbol($3, VAR|PAR|GVAR);
   		if(id_index == NO_INDEX)
-  			err("Variable '%s' have to be declared beforhand, to bu used in baranch statement! ", $3);
+  			err("Variable '%s' have to be declared beforhand, to be used in baranch statement! ", $3);
   			
 		switch_exp_id = id_index;
 		
@@ -508,7 +686,7 @@ cases
   ;
   
 break
-  : /* empty */
+  : /* empty */ /*
   | _BREAK _SEMICOLON
    {
         code("\n\t\tJMP @switch_end_%d\n", switch_num);
@@ -516,13 +694,56 @@ break
   ;
   
 default
-  : /* empty */
+  : /* empty */ /*
   | _DEFAULT
     {
         default_case = TRUE;
         code("\n@default_%d:\n", switch_num);
     }
    _TWO_DOTS statement
+  ;*/
+  
+switch_statement
+  : _SWITCH _LPAREN num_exp _RPAREN { begin_switch($3); }
+    _LBRACKET switch_sections _RBRACKET { end_switch(); }
+  ;
+  
+switch_sections
+  : switch_label switch_items
+  ;
+
+switch_items
+  : /* empty */
+  | switch_items switch_label
+  | switch_items statement { count_switch_statement(); }
+  ;
+
+switch_label
+  : _CASE literal 
+    {
+        SWITCH_CONTEXT *context = current_switch();
+        int label_number = add_switch_case($2);
+        if(context != NULL && label_number != NO_INDEX)
+            code("\n@case_%d_%d:", context->label_number, label_number);
+            // ADD ERROR MSG
+    } _TWO_DOTS
+  | _DEFAULT 
+    {
+        SWITCH_CONTEXT *context = current_switch();
+        if(context != NULL && add_switch_default())
+            code("\n@default_%d:", context->label_number);
+    } _TWO_DOTS
+  ;
+  
+break_statement
+  : _BREAK _SEMICOLON 
+    {
+        SWITCH_CONTEXT *context = current_switch();
+        if(context == NULL)
+            err("\nBreak statement is only allowed inside switch statement!");
+        else
+            code("\n\t\tJMP\t@switch_end_%d", context->label_number);
+    }
   ;
 
 conditional_exp
@@ -1001,6 +1222,7 @@ int main() {
 
   synerr = yyparse();
 
+  clear_switch_context();
   clear_symtab();
   fclose(output);
   
