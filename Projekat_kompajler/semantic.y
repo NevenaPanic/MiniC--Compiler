@@ -6,8 +6,7 @@
   #include "codegen.h"
   
   #define MAX_SIZE 50
-  //#define MAX_CASES 10
-
+  
   int yyparse(void);
   int yylex(void);
   int yyerror(char *s);
@@ -56,13 +55,6 @@
   int branch_num = 0;
   int pow_num = 0;
   
-  /* Global state for the beginig
-  int switch_num = 0;
-  int case_num = 0;
-  int switch_exp_id = -1;
-  int cases[MAX_CASES];
-  bool default_case = FALSE;*/
-  
   // Case structure
   typedef struct switch_case_data {
     int literal_index;
@@ -81,6 +73,7 @@
     unsigned case_capacity;
     unsigned statement_count;
     bool has_default;
+    bool valid;
   } SWITCH_CONTEXT;
   
   // dynamic stack structure
@@ -90,6 +83,21 @@
   int switch_count = 0;
   
   // Functions for switch stack
+  void clear_switch_context(void);
+  void fatal_error(const char *message){
+    fprintf(stderr, "\nCompiler error: %s\n", message);
+    
+    clear_switch_context();
+    clear_symtab();
+    
+    if(output != NULL){
+        fclose(output);
+        output = NULL;
+        remove("output.asm");
+    }
+    
+    exit(EXIT_FAILURE);
+  }
   
   // Get current switch context
   SWITCH_CONTEXT* current_switch(void){
@@ -100,27 +108,43 @@
   
   // Check before every switch
   void begin_switch(int expression_index){
-    // First check if type is supported
-    unsigned int expression_type = get_type(expression_index);
-    if(expression_type != INT && expression_type != UINT)
-        err("Switch expression must be int or unsigned type;");
+  
+    bool valid = TRUE;
+    unsigned int expression_type = NO_TYPE;
+  
+    if(expression_index == NO_INDEX){
+        err("Undeclared switch expression used!");
+        valid = FALSE;
+    }
+    else {
+        expression_type = get_type(expression_index); 
+        if(!get_initialized(expression_index)){     // Initialized expression value
+            err("Uninitialized variable %s used as switch expression.", get_name(expression_index));
+            valid = FALSE;
+        }   
+        else if(expression_type != INT && expression_type != UINT){ // Type checking
+            err("Switch expression must be int or unsigned type;");
+            valid = FALSE;
+        }
+    }
     
     // Second check is stack size
     if(switch_stack_size == switch_stack_capacity){
-        unsigned new_capacity = switch_stack_capacity == 0 ? 4 : switch_stack_capacity * 2;     // initialize it to 4 for first switch or double the size of current stack
+        unsigned new_capacity = switch_stack_capacity == 0 ? 4 : switch_stack_capacity * 2;
         SWITCH_CONTEXT *new_stack = realloc(switch_stack, sizeof(SWITCH_CONTEXT) * new_capacity);
         
-        if(new_stack == NULL){
-            err("\nCompiler error! Cannot allocate switch context stack!");
-            exit(EXIT_FAILURE);
-        }
-        
+        if(new_stack == NULL)
+            fatal_error("Cannot allocate switch context stack!");
+
         switch_stack = new_stack;
         switch_stack_capacity = new_capacity;
     }
     
     SWITCH_CONTEXT *context = &switch_stack[switch_stack_size++];
-    *context = (SWITCH_CONTEXT){++switch_count, expression_index, get_type(expression_index), NULL, 0, 0, 0, FALSE};
+    *context = (SWITCH_CONTEXT){switch_count++, expression_index, expression_type, NULL, 0, 0, 0, FALSE, valid};
+    
+    if(!context->valid)
+        return;
     
     code("\n@switch_begin_%d:", context->label_number);
     code("\n\t\tJMP\t@switch_check_%d", context->label_number);
@@ -133,13 +157,16 @@
     return (unsigned long long)strtoull(get_name(literal_index), NULL, 10);
   }
   
-  int add_switch_case(int literal_index){
+  void add_switch_case(int literal_index){
   
     SWITCH_CONTEXT *context = current_switch();
     if(context == NULL){
         err("\nCompiler error! Case label outside switch context!");
-        return NO_INDEX;
+        return;
     }
+    
+    if(!context->valid)
+        return;
     
     unsigned literal_type = get_type(literal_index);
     unsigned long long literal_value = switch_literal_value(literal_index);
@@ -147,14 +174,16 @@
     // Type check
     if(literal_type != context->expression_type){
         err("\nCase value is not the same type as switch expression");
-        return NO_INDEX;    
+        context->valid = FALSE;
+        return;
     }
-    
+
     // Unique value check
     for(int i = 0; i < context->case_count; i++){
         if(context->cases[i].value == literal_value){
             err("\nCase value must be unique!");
-            return NO_INDEX;
+            context->valid = FALSE;
+            return;
         }
     }
     
@@ -163,36 +192,37 @@
         unsigned new_capacity = context->case_capacity == 0 ? 4 : context->case_capacity * 2;
         SWITCH_CASE_DATA *new_cases = realloc(context->cases, sizeof(SWITCH_CASE_DATA) * new_capacity);
         
-        if(new_cases == NULL){
-            err("\nCompiler error! Cannot allocate switch case list!");
-            exit(EXIT_FAILURE);
-        }
-        
+        if(new_cases == NULL)
+            fatal_error("Cannot allocate switch case list!");
+
         context->cases = new_cases;
         context->case_capacity = new_capacity;
      }
-    
-    int label_number = (int)context->case_count;
-    context->cases[context->case_count] = (SWITCH_CASE_DATA){literal_index, literal_type, literal_value, label_number};
+
+    context->cases[context->case_count] = (SWITCH_CASE_DATA){literal_index, literal_type, literal_value, context->case_count};
+    code("\n@case_%d_%d:", context->label_number, context->case_count);
     context->case_count++;
-    return label_number;
   }
   
-  bool add_switch_default(void){
+  void add_switch_default(void){
     SWITCH_CONTEXT *context = current_switch();
         
     if(context == NULL){
         err("\nCompiler error! Default label outside switch context!");
-        return FALSE;
+        return;
     }
+    
+    if(!context->valid)
+        return;
     
     if(context->has_default){
         err("\nSwitch statement can contain only one default label!");
-        return FALSE;
+        context->valid = FALSE;
+        return;
     }
     
     context->has_default = TRUE;
-    return TRUE;
+    code("\n@default_%d:", context->label_number);
   }
   
   void count_switch_statement(void){
@@ -208,24 +238,28 @@
         return;
     }
     
-    if(context->statement_count == 0)
+    if(context->valid && context->statement_count == 0){
         err("\nSwitch must contain at least one statement!");
-        
-    code("\n\t\tJMP\t@switch_end_%d", context->label_number);
-    code("\n@switch_check_%d:", context->label_number);
-    for(int i = 0; i < context->case_count; i++){
-        code("\n\t\t%s\t", context->expression_type == INT ? "CMPS" : "CMPU");
-        gen_sym_name(context->expression_index);
-        code(",");
-        gen_sym_name(context->cases[i].literal_index);
-        code("\n\t\tJEQ\t@case_%d_%d", context->label_number, context->cases[i].label_number);
+        context->valid = FALSE;
     }
     
-    if(context->has_default)
-        code("\n\t\tJMP\t@default_%d", context->label_number);
+    if(context->valid){ 
+        code("\n\t\tJMP\t@switch_end_%d", context->label_number);
+        code("\n@switch_check_%d:", context->label_number);
+        for(int i = 0; i < context->case_count; i++){
+            code("\n\t\t%s\t", context->expression_type == INT ? "CMPS" : "CMPU");
+            gen_sym_name(context->expression_index);
+            code(",");
+            gen_sym_name(context->cases[i].literal_index);
+            code("\n\t\tJEQ\t@case_%d_%d", context->label_number, context->cases[i].label_number);
+        }
         
-    code("\n@switch_end_%d:", context->label_number);
-    free_if_reg(context->expression_index);
+        if(context->has_default)
+            code("\n\t\tJMP\t@default_%d", context->label_number);
+            
+        code("\n@switch_end_%d:", context->label_number);
+        free_if_reg(context->expression_index);
+    }
     free(context->cases);
     context->cases = NULL;
     switch_stack_size--;
@@ -239,6 +273,8 @@
     switch_stack_size = 0;
     switch_stack_capacity = 0;
   }
+  
+  
   
 %}
 
@@ -318,7 +354,7 @@ global_variable
 	  {
 		if(lookup_symbol($2, GVAR) == NO_INDEX)
 		{
-           insert_symbol($2, GVAR, $1, NO_ATR, NO_ATR, NO_ATR, NO_ATR); 
+           insert_symbol($2, GVAR, $1, NO_ATR, NO_ATR, NO_ATR, NO_ATR, FALSE); 
            code("\n%s:\n\t\tWORD\t1", $2);
         }
         else 
@@ -337,7 +373,7 @@ function
         fun_idx = lookup_symbol($2, FUN);
         if(fun_idx == NO_INDEX)
         {
-          fun_idx = insert_symbol($2, FUN, $1, NO_ATR, NO_ATR, NO_ATR, NO_ATR);
+          fun_idx = insert_symbol($2, FUN, $1, NO_ATR, NO_ATR, NO_ATR, NO_ATR, FALSE);
           Fun_params[num].fun_id = fun_idx;  //  i need this to find it again
         }
         else 
@@ -391,7 +427,7 @@ parameters
       		{
       			Fun_params[num].fun_types[param_num] = $1;
       			++int_par_num;
-				insert_symbol($2, PAR, $1, int_par_num + uint_par_num, NO_ATR, NO_ATR, NO_ATR);
+				insert_symbol($2, PAR, $1, int_par_num + uint_par_num, NO_ATR, NO_ATR, NO_ATR, TRUE);
 				set_atr1(fun_idx, int_par_num);
 				set_atr2(fun_idx, $1);
 
@@ -400,7 +436,7 @@ parameters
 		    {
 		    	Fun_params[num].fun_types[param_num] = $1;
 		    	++uint_par_num;
-		    	insert_symbol($2, PAR, $1, int_par_num + uint_par_num, NO_ATR, NO_ATR, NO_ATR);
+		    	insert_symbol($2, PAR, $1, int_par_num + uint_par_num, NO_ATR, NO_ATR, NO_ATR, TRUE);
 				set_atr3(fun_idx, uint_par_num);
 				set_atr4(fun_idx, $1);
 		    }
@@ -420,7 +456,7 @@ parameters
 			  	{	
 			  		Fun_params[num].fun_types[param_num] = $3;
 			  		++int_par_num;
-					insert_symbol($4, PAR, $3, int_par_num + uint_par_num, NO_ATR, NO_ATR, NO_ATR);
+					insert_symbol($4, PAR, $3, int_par_num + uint_par_num, NO_ATR, NO_ATR, NO_ATR, TRUE);
 					set_atr1(fun_idx, int_par_num);
 					set_atr2(fun_idx, INT);
 				}
@@ -428,7 +464,7 @@ parameters
 				{	
 					Fun_params[num].fun_types[param_num] = $3;
 					++uint_par_num;
-					insert_symbol($4, PAR, $3, int_par_num + uint_par_num, NO_ATR, NO_ATR, NO_ATR);
+					insert_symbol($4, PAR, $3, int_par_num + uint_par_num, NO_ATR, NO_ATR, NO_ATR, TRUE);
 					set_atr3(fun_idx, uint_par_num);
 					set_atr4(fun_idx, UINT);
 				}
@@ -457,32 +493,34 @@ variable_list
   ;
   
 variable
-	: _TYPE { var_type = $1; } vars _SEMICOLON;  
+	: _TYPE { var_type = $1; } vars _SEMICOLON
+	;
+	  
 vars 
 	: _ID
-		{
-        if(lookup_symbol($1, VAR|PAR) == NO_INDEX && var_type != VOID)
-           insert_symbol($1, VAR, var_type, ++var_num, NO_ATR, NO_ATR, NO_ATR);
-        else 
-      	{
-      		if(var_type == VOID)
-      			err("Can't be void type: '%s'", $1);
-      		else
-      			err("Redefinition of '%s'", $1);
-      	}
-      }
+	    {
+            if(lookup_symbol($1, VAR|PAR) == NO_INDEX && var_type != VOID)
+               insert_symbol($1, VAR, var_type, ++var_num, NO_ATR, NO_ATR, NO_ATR, FALSE);
+            else 
+          	{
+          		if(var_type == VOID)
+          			err("Can't be void type: '%s'", $1);
+          		else
+          			err("Redefinition of '%s'", $1);
+          	}
+        }
 	| vars _COMMA _ID
-		{
-        if(lookup_symbol($3, VAR|PAR) == NO_INDEX && var_type != VOID)
-           insert_symbol($3, VAR, var_type, ++var_num, NO_ATR, NO_ATR, NO_ATR);
-        else 
-         {
-      		if(var_type == VOID)
-      			err("Can't be void type: '%s'", $3);
-      		else
-      			err("Redefinition of '%s'", $3);
-      	}
-      }
+	    {   
+            if(lookup_symbol($3, VAR|PAR) == NO_INDEX && var_type != VOID)
+               insert_symbol($3, VAR, var_type, ++var_num, NO_ATR, NO_ATR, NO_ATR, FALSE);
+            else 
+             {
+          		if(var_type == VOID)
+          			err("Can't be void type: '%s'", $3);
+          		else
+          			err("Redefinition of '%s'", $3);
+          	}
+        }
 	;
 
 statement_list
@@ -516,8 +554,10 @@ assignment_statement
         else
           if(get_type(idx) != get_type($3))
             err("incompatible types in assignment");
-        
-        gen_mov($3, idx);
+        else{
+            gen_mov($3, idx);
+            set_initialized(idx, TRUE);
+        }
       }
   ;
   
@@ -526,7 +566,7 @@ for_statement
   	{
   		if(lookup_symbol($4, VAR|PAR|GVAR) == NO_INDEX) // dodala sam gvar, brojac mora biti jedinstven za svaku for petlju
   			{ 
-  				insert_symbol($4, VAR, $3, ++var_num, NO_ATR, NO_ATR, NO_ATR);
+  				insert_symbol($4, VAR, $3, ++var_num, NO_ATR, NO_ATR, NO_ATR, TRUE);
   				/*for_index = lookup_symbol($4, VAR);
   				for_reg = take_reg();
   				code("\n\t\tMOV\t");
@@ -616,123 +656,29 @@ branch_statement
   	branch_num++;
   	}
   ;
-/*
-switch_statement
-	: _SWITCH _LPAREN _ID
-	{
-  		int id_index = lookup_symbol($3, VAR|PAR|GVAR);
-  		if(id_index == NO_INDEX)
-  			err("Variable '%s' have to be declared beforhand, to be used in baranch statement! ", $3);
-  			
-		switch_exp_id = id_index;
-		
-		code("\n@switch_%d:\n", ++switch_num);
-		code("\n\t\tJMP @switch_check_%d\n", switch_num);
-    }
-	 _RPAREN _LBRACKET cases default _RBRACKET
-	 {
-	    code("\n\t\tJMP @switch_end_%d\n", switch_num);
-		code("\n@switch_check_%d:\n", switch_num);
-	    for(int i = 0; i < case_num; i++)
-	    {
-	        gen_cmp(switch_exp_id, cases[i]);
-	        code("\n\t\tJEQ @case_%d_%d", switch_num, i);
-        }
-        
-        if(default_case == TRUE)
-        {
-            code("\n\t\tJMP @default_%d", switch_num);
-        }
-        
-	    code("\n@switch_end_%d:\n", switch_num);
-	    
-		// clean up
-	    for(int i = 0; i < MAX_CASES; i++)
-	    {
-	        cases[i] = NO_INDEX;
-	    }
-	          
-        case_num = 0;
-	    default_case = FALSE;
-	 }
-	;
-	
-case
-  : _CASE con_exp
-    {
-    	if(get_type($2) != get_type(switch_exp_id))
-   		    err("Case value is not the same type as switch expression!");
-   		
-   		if(case_num == MAX_CASES)
-   		{
-	        err("Max number of cases is 10.");
-   		}
-        
-        for(int i = 0; i <= case_num; i++)
-            if(cases[i] == $2)
-                err("Case expressions must be unique!");
-        
-        cases[case_num] = $2;
-        code("\n@case_%d_%d:", switch_num, case_num);
-        ++case_num;
-	   
-    }
-   _TWO_DOTS statement break
-  ;
 
-cases
-  : case
-  | cases case
-  ;
-  
-break
-  : /* empty */ /*
-  | _BREAK _SEMICOLON
-   {
-        code("\n\t\tJMP @switch_end_%d\n", switch_num);
-   }
-  ;
-  
-default
-  : /* empty */ /*
-  | _DEFAULT
-    {
-        default_case = TRUE;
-        code("\n@default_%d:\n", switch_num);
-    }
-   _TWO_DOTS statement
-  ;*/
-  
 switch_statement
-  : _SWITCH _LPAREN num_exp _RPAREN { begin_switch($3); }
+  : _SWITCH _LPAREN _ID { $<i>$ = lookup_symbol($3, VAR|PAR|GVAR);} _RPAREN { begin_switch($<i>4); }
     _LBRACKET switch_sections _RBRACKET { end_switch(); }
   ;
   
 switch_sections
+  : switch_section
+  | switch_sections switch_section
+  ;
+  
+switch_section
   : switch_label switch_items
   ;
 
 switch_items
   : /* empty */
-  | switch_items switch_label
   | switch_items statement { count_switch_statement(); }
   ;
 
 switch_label
-  : _CASE literal 
-    {
-        SWITCH_CONTEXT *context = current_switch();
-        int label_number = add_switch_case($2);
-        if(context != NULL && label_number != NO_INDEX)
-            code("\n@case_%d_%d:", context->label_number, label_number);
-            // ADD ERROR MSG
-    } _TWO_DOTS
-  | _DEFAULT 
-    {
-        SWITCH_CONTEXT *context = current_switch();
-        if(context != NULL && add_switch_default())
-            code("\n@default_%d:", context->label_number);
-    } _TWO_DOTS
+  : _CASE literal { add_switch_case($2); } _TWO_DOTS
+  | _DEFAULT { add_switch_default(); } _TWO_DOTS
   ;
   
 break_statement
@@ -741,7 +687,7 @@ break_statement
         SWITCH_CONTEXT *context = current_switch();
         if(context == NULL)
             err("\nBreak statement is only allowed inside switch statement!");
-        else
+        else if(context->valid)
             code("\n\t\tJMP\t@switch_end_%d", context->label_number);
     }
   ;
@@ -776,7 +722,7 @@ con_exp
 	 {
 		int index = lookup_symbol($1, VAR|PAR|GVAR);
 		if(index == NO_INDEX)
-			err("\nId %s is not declared!", get_name(index));
+			err("\nId %s is not declared!", $1);
 		$$ = index;
 	 }
 	;

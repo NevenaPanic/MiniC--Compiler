@@ -31,7 +31,7 @@ int get_last_element(void) {
 // i vraca indeks ubacenog elementa u tabeli simbola 
 // ili -1 u slucaju da nema slobodnog elementa u tabeli.
 int insert_symbol(char *name, unsigned kind, unsigned type, 
-                  unsigned atr1, unsigned atr2, unsigned atr3, unsigned atr4){
+                  unsigned atr1, unsigned atr2, unsigned atr3, unsigned atr4, bool initialized){
   int index = get_next_empty_element();
   symbol_table[index].name = name;
   symbol_table[index].kind = kind;
@@ -40,6 +40,7 @@ int insert_symbol(char *name, unsigned kind, unsigned type,
   symbol_table[index].atr2 = atr2;
   symbol_table[index].atr3 = atr3;
   symbol_table[index].atr4 = atr4;
+  symbol_table[index].initialized = initialized;
   return index;
 }
 
@@ -57,7 +58,7 @@ int insert_literal(char *str, unsigned type) {
   if(((type==INT) && (num<INT_MIN || num>INT_MAX) )
     || ((type==UINT) && (num<0 || num>UINT_MAX)) )  
       err("literal out of range");
-  idx = insert_symbol(str, LIT, type, NO_ATR, NO_ATR, NO_ATR, NO_ATR);
+  idx = insert_symbol(str, LIT, type, NO_ATR, NO_ATR, NO_ATR, NO_ATR, FALSE);
   return idx;
 }
 
@@ -149,6 +150,17 @@ unsigned get_atr4(int index) {
   return NO_ATR;
 }
 
+void set_initialized(int index, bool initialized){
+    if(index > -1 && index < SYMBOL_TABLE_LENGTH)
+        symbol_table[index].initialized = initialized;
+}
+
+bool get_initialized(int index){
+  if(index > -1 && index < SYMBOL_TABLE_LENGTH)
+    return symbol_table[index].initialized;
+  return FALSE;
+}
+
 // Brise elemente tabele od zadatog indeksa do kraja tabele
 void clear_symbols(unsigned begin_index) {
   int i;
@@ -168,6 +180,7 @@ void clear_symbols(unsigned begin_index) {
     symbol_table[i].atr2 = NO_TYPE;
     symbol_table[i].atr3 = NO_ATR;
     symbol_table[i].atr4 = NO_TYPE;
+    symbol_table[i].initialized = FALSE;
   }
   first_empty = begin_index;
 }
@@ -184,17 +197,19 @@ void print_symtab(void) {
     "NONE", "REG", "LIT", "FUN", "VAR", "PAR" };
   int i,j;
   printf("\n\nSYMBOL TABLE\n");
-  printf("\n       name           kind   type  atr1   atr2    atr3   atr4");
-  printf("\n-- ---------------- -------- ----  -----  -----   -----  ------");
+  printf("\n       name           kind   type  atr1   atr2    atr3   atr4  initialized");
+  printf("\n-- ---------------- -------- ----  -----  -----   -----  ----- ------------");
   for(i = 0; i < first_empty; i++) {
-    printf("\n%2d %-19s %-4s %4d  %4d  %4d    %4d    %4d", i, 
+    printf("\n%2d %-19s %-4s %4d  %4d  %4d    %4d    %4d    %s", i, 
     symbol_table[i].name, 
     symbol_kinds[(int)(logarithm2(symbol_table[i].kind))], 
     symbol_table[i].type, 
     symbol_table[i].atr1, 
     symbol_table[i].atr2,
     symbol_table[i].atr3,
-    symbol_table[i].atr4);
+    symbol_table[i].atr4,
+    symbol_table[i].initialized ? "TRUE" : "FALSE"
+    );
   }
   printf("\n\n");
 }
@@ -218,7 +233,7 @@ void init_symtab(void) {
   char s[4];
   for(i = 0; i < 14; i++) {
     sprintf(s, "%%%d", i);
-    insert_symbol(strdup(s), REG, NO_TYPE, NO_ATR, NO_ATR, NO_ATR, NO_ATR);
+    insert_symbol(strdup(s), REG, NO_TYPE, NO_ATR, NO_ATR, NO_ATR, NO_ATR, FALSE);
   }
 }
 

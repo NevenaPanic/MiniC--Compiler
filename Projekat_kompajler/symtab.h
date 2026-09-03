@@ -11,6 +11,7 @@ typedef struct sym_entry {
    unsigned atr2;          // dodatni attribut simbola za int tip
    unsigned atr3;          // dodatni attribut simbola za uint
    unsigned atr4;          // dodatni attribut simbola za uint
+   bool     initialized;
    
 } SYMBOL_ENTRY;
 
@@ -24,7 +25,7 @@ int get_last_element(void);
 // i vraca indeks ubacenog elementa u tabeli simbola 
 // ili -1 u slucaju da nema slobodnog elementa u tabeli.
 int insert_symbol(char *name, unsigned kind, unsigned type, 
-                  unsigned atr1, unsigned atr2, unsigned atr3, unsigned atr4);
+                  unsigned atr1, unsigned atr2, unsigned atr3, unsigned atr4, bool initialized);
 
 // Ubacuje konstantu u tabelu simbola (ako vec ne postoji).
 int insert_literal(char *str, unsigned type);
@@ -47,6 +48,8 @@ void     set_atr3(int index, unsigned atr3);
 unsigned get_atr3(int index);
 void     set_atr4(int index, unsigned atr4);
 unsigned get_atr4(int index);
+void     set_initialized(int index, bool initialized);
+bool get_initialized(int index);
 
 // Brise elemente tabele od zadatog indeksa
 void clear_symbols(unsigned begin_index);
